@@ -45,7 +45,8 @@ MAKE           = make
 MAKE_DIR       = $(PWD)
 MAKE_PATH     := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
 COREV_PROJ     = cv32
-CORE_V_VERIF   = $(abspath $(MAKE_PATH)/../../..)
+CV32E40S_DV    = $(abspath $(MAKE_PATH)/../../)
+CORE_V_VERIF   = $(CV32E40S_DV)
 DATE           = $(shell date +%F)
 WAVES          = 0
 
@@ -114,6 +115,10 @@ ifneq (${WAVES}, 0)
   DSIM_CMP_FLAGS += +acc+b
   DSIM_DMP_FILE  ?= dsim.fst
   DSIM_RUN_FLAGS += -waves $(DSIM_DMP_FILE) +disass +disass_display
+  # Verilator wave support (FST)
+  VERI_TRACE      = --trace-fst
+  VERI_RUN_FLAGS += +waves
+  VERI_WAVE_CMD   = +wave_file=cv32e40s.fst
 endif
 
 # xrun is the Cadence xcelium SystemVerilog simulator (https://cadence.com/)
@@ -124,7 +129,7 @@ XRUN_DIR          = xcelium.d
 # verilator configuration
 VERILATOR           = verilator
 VERI_FLAGS         +=
-VERI_COMPILE_FLAGS += -Wno-BLKANDNBLK +define+COREV_ASSERT_OFF $(SV_CMP_FLAGS) # hope this doesn't hurt us in the long run
+VERI_COMPILE_FLAGS += -Wno-COMBDLY -Wno-MULTIDRIVEN -Wno-BLKANDNBLK -Wno-lint --Wno-UNOPTFLAT -Wno-MODDUP -Wno-SYMRSVDWORD +define+COREV_ASSERT_OFF $(SV_CMP_FLAGS)
 VERI_TRACE         ?=
 VERI_OBJ_DIR       ?= cobj_dir
 VERI_LOG_DIR       ?= cobj_dir/logs
@@ -148,7 +153,7 @@ ASIM_DEBUG_FLAGS  = -dbg
 ASIM_GUI_FLAGS    = -gui
 
 # TB source files for the CV32E core
-TBSRC_HOME  := $(CORE_V_VERIF)/$(CV_CORE_LC)/tb
+TBSRC_HOME  := $(CV32E40S_DV)/tb
 TBSRC_TOP   := $(TBSRC_HOME)/core/tb_top.sv
 TBSRC_CORE  := $(TBSRC_HOME)/core
 TBSRC_PKG   := $(TBSRC_CORE)/tb_riscv/include/perturbation_defines.sv
@@ -166,13 +171,12 @@ TBSRC       := $(TBSRC_CORE)/tb_top.sv \
 RTLSRC_VLOG_TB_TOP	:= $(basename $(notdir $(TBSRC_TOP)))
 RTLSRC_VOPT_TB_TOP	:= $(addsuffix _vopt, $(RTLSRC_VLOG_TB_TOP))
 
-TBSRC_VERI  := $(TBSRC_CORE)/tb_top_verilator.sv \
+TBSRC_VERI  := $(TBSRC_CORE)/tb_top.sv \
                $(TBSRC_CORE)/cv32e40s_tb_wrapper.sv \
                $(TBSRC_CORE)/tb_riscv/riscv_rvalid_stall.sv \
                $(TBSRC_CORE)/tb_riscv/riscv_gnt_stall.sv \
                $(TBSRC_CORE)/mm_ram.sv \
                $(TBSRC_CORE)/dp_ram.sv
-SIM_LIBS    := $(CORE_V_VERIF)/lib/sim_libs
 
 # RTL source files for the CV32E core
 # DESIGN_RTL_DIR is used by CV_CORE_MANIFEST file
@@ -438,45 +442,37 @@ xrun-clean-all: xrun-clean
 ###############################################################################
 # Verilator
 
-# We first test if the user wants to to vcd dumping. This hacky part is required
-# because we need to conditionally compile the testbench (-DVCD_TRACE) and pass
-# the --trace flags to the verilator call
-#ifeq ($(findstring +vcd,$(VERI_FLAGS)),+vcd)
+# Verilator wave support is handled in the DSIM WAVES block above (FST format)
 
-ifneq (${WAVES}, 0)
-VERI_TRACE="--trace"
-VERI_CFLAGS+="-DVCD_TRACE"
-endif
+SIM_RESULTS          = simulation_results
+SIM_TEST_RESULTS     = $(SIM_RESULTS)/$(TEST)
 
-verilate: testbench_verilator
-
-sanity-veri-run:
-	make veri-test TEST=hello-world
-
-testbench_verilator: CV_CORE_pkg $(TBSRC_VERI) $(TBSRC_PKG)
+verilate: CV_CORE_pkg $(TBSRC_VERI) $(TBSRC_PKG)
 	@echo "$(BANNER)"
 	@echo "* Compiling CORE TB and CV32E40S with Verilator"
 	@echo "$(BANNER)"
-	$(VERILATOR) --cc --sv --exe \
+	$(VERILATOR) --binary --cc --sv --exe \
 		$(VERI_TRACE) \
-		--Wno-lint --Wno-UNOPTFLAT \
-		--Wno-MODDUP --top-module \
-		tb_top_verilator $(TBSRC_VERI) \
+		--top-module tb_top \
+		$(TBSRC_VERI) \
 		-f $(CV_CORE_MANIFEST) \
-		$(CV_CORE_PKG)/bhv/$(CV_CORE_LC)_core_log.sv \
-		$(TBSRC_CORE)/tb_top_verilator.cpp --Mdir $(VERI_OBJ_DIR) \
-		-CFLAGS "-std=gnu++11 $(VERI_CFLAGS)" \
+		--Mdir $(VERI_OBJ_DIR) \
+		-CFLAGS "-std=gnu++14 $(VERI_CFLAGS)" \
 		$(VERI_COMPILE_FLAGS)
-	$(MAKE) -C $(VERI_OBJ_DIR) -f Vtb_top_verilator.mk
-	cp $(VERI_OBJ_DIR)/Vtb_top_verilator testbench_verilator
+	mkdir -p $(SIM_RESULTS)
+	mkdir -p $(SIM_TEST_RESULTS)
+	mv $(VERI_OBJ_DIR)/Vtb_top $(SIM_TEST_RESULTS)/verilator_executable
+
+sanity-veri-run:
+	make verilate TEST=hello-world
 
 veri-test: verilate $(VERI_CUSTOM)/$(TEST)/$(TEST).hex
 	@echo "$(BANNER)"
 	@echo "* Running with Verilator: logfile in $(VERI_LOG_DIR)/$(TEST).log"
 	@echo "$(BANNER)"
 	mkdir -p $(VERI_LOG_DIR)
-	./testbench_verilator $(VERI_FLAGS) \
-		"+firmware=$(VERI_CUSTOM)/$(TEST)/$(TEST).hex" \
+	$(SIM_TEST_RESULTS)/verilator_executable $(VERI_FLAGS) \
+		"+test_program=$(VERI_CUSTOM)/$(TEST)/$(TEST).hex" \
 		| tee $(VERI_LOG_DIR)/$(TEST).log
 
 # verilator specific cleanup
@@ -485,6 +481,7 @@ veri-clean: verilate-clean
 verilate-clean: tc-clean
 	if [ -d $(VERI_LOG_DIR) ]; then rm -r $(VERI_LOG_DIR); fi
 	if [ -d $(VERI_OBJ_DIR) ]; then rm -r $(VERI_OBJ_DIR); fi
+	if [ -d $(SIM_RESULTS) ]; then rm -r $(SIM_RESULTS); fi
 	rm -rf testbench_verilator
 	if [ -e memory_dump.bin ]; then rm memory_dump.bin; fi
 
@@ -629,7 +626,7 @@ riviera-clean:
 ###############################################################################
 # CV_CORE RTL dependencies
 
-clone_$(CV_CORE_LC)_rtl:
+clone_$(CV_CORE_LC)_rtl clone_rtl:
 	@echo "$(BANNER)"
 	@echo "* Cloning CV32E40S RTL model"
 	@echo "$(BANNER)"
@@ -644,13 +641,12 @@ clone_$(CV_CORE_LC)_rtl:
 
 # clean up toolchain generated files
 clean-test-programs:
-	find $(CORE_V_VERIF)/$(CV_CORE_LC)/tests/programs -name *.o       -exec rm {} \;
-	find $(CORE_V_VERIF)/$(CV_CORE_LC)/tests/programs -name *.hex     -exec rm {} \;
-	find $(CORE_V_VERIF)/$(CV_CORE_LC)/tests/programs -name *.elf     -exec rm {} \;
-	find $(CORE_V_VERIF)/$(CV_CORE_LC)/tests/programs -name *.map     -exec rm {} \;
-	find $(CORE_V_VERIF)/$(CV_CORE_LC)/tests/programs -name *.readelf -exec rm {} \;
-	find $(CORE_V_VERIF)/$(CV_CORE_LC)/tests/programs -name *.objdump -exec rm {} \;
-	find $(CORE_V_VERIF)/$(CV_CORE_LC)/tests/programs -name corev_*.S -exec rm {} \;
+	find $(CV32E40S_DV)/tests/programs -name "*.o"       -exec rm {} \;
+	find $(CV32E40S_DV)/tests/programs -name "*.hex"     -exec rm {} \;
+	find $(CV32E40S_DV)/tests/programs -name "*.elf"     -exec rm {} \;
+	find $(CV32E40S_DV)/tests/programs -name "*.map"     -exec rm {} \;
+	find $(CV32E40S_DV)/tests/programs -name "*.readelf" -exec rm {} \;
+	find $(CV32E40S_DV)/tests/programs -name "*.objdump" -exec rm {} \;
 
 .PHONY: clean clean_all distclean
 clean: clean-test-programs questa-clean verilate-clean vcs-clean firmware-clean dsim-clean xrun-clean vcs-clean clean_bsp riviera-clean
@@ -660,3 +656,203 @@ distclean: clean
 
 clean_all: distclean
 #endend
+
+###############################################################################
+# ACT4 Certification workflow
+###############################################################################
+
+# config selector (override on command line for future variants, e.g. rv32imcb)
+CV_CORE_CONFIG   ?= rv32imc_PMA-PMP
+CERT_CONFIG_NAME  = cv32e40s_$(CV_CORE_CONFIG)
+
+###############################################################################
+# Certification profile: scopes which extension testplans ACT4 processes.
+# ACT4's select_tests() further filters by the core's implemented_extensions.
+# Without CERT_PROFILE, ACT4 runs the full config (no EXTENSIONS= filter).
+# Supported profiles: rvi20
+CERT_PROFILE ?=
+
+ifeq ($(CERT_PROFILE),rvi20)
+  # RVI20U32 profile — mandatory: I; optional: A,C,D,F,M,Zca,Zcd,Zcf,Zicntr,Zicsr,Zifencei,Zihpm
+  _CERT_EXTS = I,M,A,C,D,F,Zca,Zcd,Zcf,Zicntr,Zicsr,Zifencei,Zihpm
+else ifneq ($(CERT_PROFILE),)
+  $(error Unknown CERT_PROFILE=$(CERT_PROFILE). Supported: rvi20)
+endif
+
+###############################################################################
+# certification test-program directories
+certification_PROGRAM_PATH    = $(ACT4_PKG)/work/$(CERT_CONFIG_NAME)/elfs
+certification_PROGRAM_RELPATH = ../../vendor_lib/riscv-arch-test/act4/work/$(CERT_CONFIG_NAME)/elfs
+CERT_RESULTS_DIR = certification$(if $(CERT_PROFILE),_$(CERT_PROFILE))
+
+###############################################################################
+# certification test target (run ALL ELFs under compliance/rv32, quiet + summary)
+.PHONY: gen
+gen: $(ACT4_PKG)
+	@command -v uv >/dev/null 2>&1 || { echo "Error: 'uv' not found. Install from https://docs.astral.sh/uv/getting-started/installation/"; exit 1; }
+	@$(MAKE) -C $(ACT4_PKG) clean
+	@echo "* Running ACT4.0 gen$(if $(CERT_PROFILE), with profile '$(CERT_PROFILE)' extensions: $(_CERT_EXTS))"
+	@$(MAKE) -C $(ACT4_PKG) \
+	    $(if $(_CERT_EXTS),EXTENSIONS=$(_CERT_EXTS)) \
+	    CONFIG_FILES=config/cores/cv32e40s/$(CERT_CONFIG_NAME)/test_config.yaml
+
+.PHONY: certify
+certify: TEST = $(CERT_RESULTS_DIR)
+certify: verilate
+	@echo "$(BANNER)"
+	@echo "* Running ALL compliance ELFs with Verilator"
+	@echo "$(BANNER)"
+	@set -e; \
+	mkdir -p "$(VERI_LOG_DIR)"; \
+	SUMMARY="$(VERI_LOG_DIR)/certification_summary.txt"; \
+	echo "RESULT  TEST" > "$$SUMMARY"; \
+	echo "------  ----" >> "$$SUMMARY"; \
+	ROOT="$(certification_PROGRAM_PATH)/rv32i"; \
+	ELFS="$$(find -L "$$ROOT" \( -type f -o -type l \) -a \( -iname '*.elf' -o -iname '*.elf32' \) 2>/dev/null | sort)"; \
+	if [ -z "$$ELFS" ]; then \
+	  echo "No .elf files found under $$ROOT"; \
+	  echo "Debug listing (2 levels):"; \
+	  find "$$ROOT" -maxdepth 2 -print || true; \
+	  exit 2; \
+	fi; \
+	PASS=0; FAIL=0; TOTAL=0; \
+	for ELF in $$ELFS; do \
+	  TOTAL=$$((TOTAL+1)); \
+	  REL="$${ELF#$$ROOT/}"; \
+	  BASE="$${ELF%.*}"; \
+	  HEX="$$BASE.hex"; \
+	  LOG="$(VERI_LOG_DIR)/$${REL%.*}.log"; \
+	  mkdir -p "$$(dirname "$$LOG")"; \
+	  if [ ! -f "$$HEX" ] || [ "$$ELF" -nt "$$HEX" ]; then \
+	    riscv64-unknown-elf-objcopy -O verilog "$$ELF" "$$HEX"; \
+	  fi; \
+	  ENTRY=$$(riscv64-unknown-elf-readelf -h "$$ELF" | awk '/Entry point/{print $$NF}'); \
+	  set +e; \
+	  "$(SIM_TEST_RESULTS)/verilator_executable" \
+	    $(VERI_RUN_FLAGS) \
+	    $(VERI_WAVE_CMD) \
+	    "+test_program=$$HEX" \
+	    "+boot_addr=$$ENTRY" \
+	    > "$$LOG" 2>&1; \
+	  RC=$$?; \
+	  set -e; \
+	  if [ $$RC -eq 0 ] && grep -q "ALL TESTS PASSED" "$$LOG"; then \
+	    echo "PASS    $$REL" | tee -a "$$SUMMARY"; \
+	    PASS=$$((PASS+1)); \
+	  else \
+	    echo "FAIL    $$REL" | tee -a "$$SUMMARY"; \
+	    FAIL=$$((FAIL+1)); \
+	  fi; \
+	done; \
+	echo "" | tee -a "$$SUMMARY"; \
+	echo "TOTAL=$$TOTAL PASS=$$PASS FAIL=$$FAIL" | tee -a "$$SUMMARY"; \
+	echo "Summary saved to: $$SUMMARY"; \
+	true
+
+.PHONY: gen-certify
+gen-certify: gen certify
+
+###############################################################################
+# Questa (vsim) certification flow
+# Usage:
+#   make questa-compile [CV_CORE_CONFIG=rv32imc]  # compile once
+#   make certify-vsim   [CV_CORE_CONFIG=rv32imc]  # run all ELFs under rv32i/
+#   make certify-vsim FILTER=I                     # run only rv32i/I ELFs
+#   make gen-certify-vsim [CV_CORE_CONFIG=rv32imc] # gen + compile + run
+#   make questa-clean   [CV_CORE_CONFIG=rv32imc]   # wipe work library
+###############################################################################
+
+CERT_VSIM_WORK_DIR = $(SIM_RESULTS)/questa_$(CV_CORE_CONFIG)
+CERT_VSIM_LOG_DIR  = $(CERT_VSIM_WORK_DIR)/logs
+CERT_VSIM_OPT_TOP  = tb_top_opt
+
+# NOTE: with a full Questa license, remove +define+VERILATOR below and add a
+# separate vlog step for tb_riscv/riscv_random_interrupt_generator.sv (after
+# TBSRC_PKG, before TBSRC_VERI) — mm_ram.sv instantiates it under `ifndef VERILATOR.
+# With Questa FSE (Altera Starter), keep +define+VERILATOR.
+CERT_VLOG_FLAGS = -sv -work $(CERT_VSIM_WORK_DIR) \
+                  +define+VERILATOR \
+                  -suppress 2583
+CERT_VOPT_FLAGS = -work $(CERT_VSIM_WORK_DIR) \
+                  +acc -o $(CERT_VSIM_OPT_TOP)
+CERT_VSIM_MAX_CYCLES ?= 2000000
+CERT_VSIM_FLAGS = -work $(CERT_VSIM_WORK_DIR) \
+                  -batch -quiet \
+                  -sv_seed 0 \
+                  +nowarnTSCALE \
+                  -suppress 8386 \
+                  -suppress 3009 \
+                  -do "run -all; quit -f" \
+                  +maxcycles=$(CERT_VSIM_MAX_CYCLES)
+
+.PHONY: questa-compile
+questa-compile: CV_CORE_pkg
+	@echo "$(BANNER)"
+	@echo "* Compiling CORE TB and CV32E40S with Questa (CV_CORE_CONFIG=$(CV_CORE_CONFIG))"
+	@echo "$(BANNER)"
+	mkdir -p $(CERT_VSIM_WORK_DIR)
+	$(VLOG) $(CERT_VLOG_FLAGS) -f $(CV_CORE_MANIFEST)
+	$(VLOG) $(CERT_VLOG_FLAGS) $(TBSRC_PKG)
+	$(VLOG) $(CERT_VLOG_FLAGS) $(TBSRC_VERI)
+	$(VOPT) $(CERT_VOPT_FLAGS) tb_top
+
+.PHONY: certify-vsim
+certify-vsim: TEST = $(CERT_RESULTS_DIR)
+certify-vsim:
+	@test -d "$(CERT_VSIM_WORK_DIR)/$(CERT_VSIM_OPT_TOP)" || { echo "Error: optimized design '$(CERT_VSIM_OPT_TOP)' not found. Run 'make questa-compile' first."; exit 1; }
+	@echo "$(BANNER)"
+	@echo "* Running ALL compliance ELFs with Questa (CV_CORE_CONFIG=$(CV_CORE_CONFIG))"
+	@echo "$(BANNER)"
+	@set -e; \
+	mkdir -p "$(CERT_VSIM_LOG_DIR)"; \
+	SUMMARY="$(CERT_VSIM_LOG_DIR)/certification_summary.txt"; \
+	echo "RESULT  TEST" > "$$SUMMARY"; \
+	echo "------  ----" >> "$$SUMMARY"; \
+	ROOT="$(certification_PROGRAM_PATH)/rv32i$(if $(FILTER),/$(FILTER),)"; \
+	ELFS="$$(find -L "$$ROOT" \( -type f -o -type l \) -a \( -iname '*.elf' -o -iname '*.elf32' \) 2>/dev/null | sort)"; \
+	if [ -z "$$ELFS" ]; then \
+	  echo "No .elf files found under $$ROOT"; \
+	  echo "Debug listing (2 levels):"; \
+	  find "$$ROOT" -maxdepth 2 -print || true; \
+	  exit 2; \
+	fi; \
+	PASS=0; FAIL=0; TOTAL=0; \
+	while IFS= read -r ELF; do \
+	  TOTAL=$$((TOTAL+1)); \
+	  REL="$${ELF#$$ROOT/}"; \
+	  BASE="$${ELF%.*}"; \
+	  HEX="$$BASE.hex"; \
+	  LOG="$(CERT_VSIM_LOG_DIR)/$${REL%.*}.log"; \
+	  mkdir -p "$$(dirname "$$LOG")"; \
+	  if [ ! -f "$$HEX" ] || [ "$$ELF" -nt "$$HEX" ]; then \
+	    riscv64-unknown-elf-objcopy -O verilog "$$ELF" "$$HEX"; \
+	  fi; \
+	  ENTRY=$$(riscv64-unknown-elf-readelf -h "$$ELF" | awk '/Entry point/{print $$NF}'); \
+	  ENTRY_HEX=$${ENTRY#0x}; \
+	  set +e; \
+	  $(VSIM) $(CERT_VSIM_FLAGS) \
+	    $(CERT_VSIM_OPT_TOP) \
+	    "+test_program=$$HEX" \
+	    "+boot_addr=$$ENTRY_HEX" \
+	    > "$$LOG" 2>&1; \
+	  RC=$$?; \
+	  set -e; \
+	  if [ $$RC -eq 0 ] && grep -q "ALL TESTS PASSED" "$$LOG"; then \
+	    echo "PASS    $$REL" | tee -a "$$SUMMARY"; \
+	    PASS=$$((PASS+1)); \
+	  else \
+	    echo "FAIL    $$REL" | tee -a "$$SUMMARY"; \
+	    FAIL=$$((FAIL+1)); \
+	  fi; \
+	done <<< "$$ELFS"; \
+	echo "" | tee -a "$$SUMMARY"; \
+	echo "TOTAL=$$TOTAL PASS=$$PASS FAIL=$$FAIL" | tee -a "$$SUMMARY"; \
+	echo "Summary saved to: $$SUMMARY"; \
+	true
+
+.PHONY: gen-certify-vsim
+gen-certify-vsim: gen questa-compile certify-vsim
+
+.PHONY: questa-clean
+questa-clean:
+	rm -rf $(CERT_VSIM_WORK_DIR)

@@ -1,3 +1,8 @@
+// Top level testbench for the CV32E40S
+//
+// Copyright 2025 Eclipse Foundation
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-0.51
+//
 // Copyright 2017 Embecosm Limited <www.embecosm.com>
 // Copyright 2018 Robert Balas <balasr@student.ethz.ch>
 // Copyright and related rights are licensed under the Solderpad Hardware
@@ -9,7 +14,6 @@
 // CONDITIONS OF ANY KIND, either express or implied. See the License for the
 // specific language governing permissions and limitations under the License.
 
-// Top level wrapper for a RI5CY testbench
 // Contributor: Robert Balas <balasr@student.ethz.ch>
 //              Jeremy Bennett <jeremy.bennett@embecosm.com>
 
@@ -17,45 +21,48 @@
 
 module tb_top
     #(parameter INSTR_RDATA_WIDTH = 32,
-      parameter RAM_ADDR_WIDTH = 22,
-      parameter BOOT_ADDR  = 'h80);
+      parameter RAM_ADDR_WIDTH    = 22);
 
-    // comment to record execution trace
-    //`define TRACE_EXECUTION
+    // boot_addr can be overridden at runtime via +boot_addr=<hex> plusarg
+    logic [31:0] boot_addr;
+    initial begin
+        if (!$value$plusargs("boot_addr=%h", boot_addr))
+            boot_addr = 32'h80;
+    end
 
-    const time CLK_PHASE_HI       = 5ns;
-    const time CLK_PHASE_LO       = 5ns;
-    const time CLK_PERIOD         = CLK_PHASE_HI + CLK_PHASE_LO;
-    const time STIM_APPLICATION_DEL = CLK_PERIOD * 0.1;
-    const time RESP_ACQUISITION_DEL = CLK_PERIOD * 0.9;
-    const time RESET_DEL = STIM_APPLICATION_DEL;
-    const int  RESET_WAIT_CYCLES  = 4;
-
+    const int CLK_PHASE_HI        = 5;
+    const int CLK_PHASE_LO        = 5;
+    const int CLK2NRESET_DELAY    = 1;
+    const int RESET_ASSERT_CYCLES = 4;
 
     // clock and reset for tb
     logic                   core_clk;
-    logic                   iss_clk;
     logic                   core_rst_n;
 
     // cycle counter
     int unsigned            cycle_cnt_q;
 
-    // testbench result
+    // exit status flags
     logic                   tests_passed;
     logic                   tests_failed;
     logic                   exit_valid;
     logic [31:0]            exit_value;
 
-    // signals for ri5cy
+    // strings for $display() and plusarg processing
+    string id = "tb_top";
+    string wave_file;
+
+    // signals for the core
     logic                   fetch_enable;
 
     // make the core start fetching instruction immediately
     assign fetch_enable = '1;
 
-    // allow vcd dump
+    // dumps waves
     initial begin
-        if ($test$plusargs("vcd")) begin
-            $dumpfile("riscy_tb.vcd");
+        if ($value$plusargs("wave_file=%s", wave_file)) begin
+            $display("[%s] @ t=%0t: dumping waves to %s", id, $time, wave_file);
+            $dumpfile(wave_file);
             $dumpvars(0, tb_top);
         end
     end
@@ -63,22 +70,21 @@ module tb_top
     // we either load the provided firmware or execute a small test program that
     // doesn't do more than an infinite loop with some I/O
     initial begin: load_prog
-        automatic string firmware;
-        automatic int prog_size = 6;
-
-        if($value$plusargs("firmware=%s", firmware)) begin
+        automatic string test_program;
+        if($value$plusargs("test_program=%s", test_program)) begin
             if($test$plusargs("verbose"))
-                $display("[TESTBENCH] @ t=%0t: loading firmware %0s",
-                         $time, firmware);
-            $readmemh(firmware, cv32e40s_tb_wrapper_i.ram_i.dp_ram_i.mem);
+                $display("[%s] @ t=%0t: loading test-program %0s", id, $time, test_program);
+            $readmemh(test_program, cv32e40s_tb_wrapper_i.ram_i.dp_ram_i.mem);
         end else begin
-            $display("No firmware specified");
+            $display("[%s] @ t=%0t: No test_program specified... terminating.", id, $time);
             $finish;
         end
     end
 
     initial begin: clock_gen
-        forever begin
+        core_clk = 1'b1;
+        // FIXME: using a forever loop here hangs Verilator
+        repeat(10_000_000) begin
             #CLK_PHASE_HI core_clk = 1'b0;
             #CLK_PHASE_LO core_clk = 1'b1;
         end
@@ -88,25 +94,20 @@ module tb_top
     // timing format, reset generation and parameter check
     initial begin
         $timeformat(-9, 0, "ns", 9);
-        core_rst_n = 1'b0;
+        core_rst_n   = 1'b1; // deassert reset at t=0
 
-        // wait a few cycles
-        repeat (RESET_WAIT_CYCLES) begin
-            @(posedge core_clk); //TODO: was posedge, see below
-        end
-
+        @(negedge core_clk) core_rst_n = 1'b0; // assert reset
+        // hold in reset for a few cycles
+        repeat (RESET_ASSERT_CYCLES) @(posedge core_clk);
         // start running
-        #RESET_DEL core_rst_n = 1'b1;
-
-        repeat (3) @(negedge core_clk);
+        #CLK2NRESET_DELAY core_rst_n = 1'b1;
         core_rst_n = 1'b1;
-
         if($test$plusargs("verbose")) begin
-            $display("reset deasserted", $time);
+            $display("[%s] @ t=%0t: reset deasserted", id, $time);
         end
 
         if ( !( (INSTR_RDATA_WIDTH == 128) || (INSTR_RDATA_WIDTH == 32) ) ) begin
-         $fatal(2, "invalid INSTR_RDATA_WIDTH, choose 32 or 128");
+         $fatal(2, "[%s] @ t=%0t: invalid INSTR_RDATA_WIDTH, choose 32 or 128", id, $time);
         end
     end
 
@@ -119,29 +120,42 @@ module tb_top
             end else begin
                 cycle_cnt_q     <= cycle_cnt_q + 1;
                 if (cycle_cnt_q >= maxcycles) begin
-                    $fatal(2, "Simulation aborted due to maximum cycle limit");
+                    $fatal(2, "[%s] @ t=%0t: Simulation aborted due to maximum cycle limit", id, $time);
                 end
             end
         end
     end
 
-    // check if we succeded
-    always_ff @(posedge core_clk, negedge core_rst_n) begin
+    // Check for virtual peripheral status flags that the test-program may (or
+    // may not) use to indicate the end of a test.
+    always_ff @(posedge core_clk) begin: vp_check
         if (tests_passed) begin
-            $display("ALL TESTS PASSED");
-            $finish;
+            $display("[%s] @ t=%0t: ALL TESTS PASSED", id, $time);
+            end_of_sim();
         end
         if (tests_failed) begin
-            $display("TEST(S) FAILED!");
-            $finish;
+            $display("[%s] @ t=%0t: TEST(S) FAILED!", id, $time);
+            end_of_sim();
         end
         if (exit_valid) begin
             if (exit_value == 0)
-                $display("%m @ %0t: EXIT SUCCESS", $time);
+                $display("[%s] @ %0t: EXIT SUCCESS", id, $time);
             else
-                $display("%m @ %0t: EXIT FAILURE: %d", exit_value, $time);
-            $finish;
+                $display("[%s] @ %0t: EXIT FAILURE: %d", id, $time, exit_value);
+            end_of_sim();
         end
+    end
+
+    // End Of Simulation control
+    task end_of_sim();
+        $finish;
+    endtask
+
+    final begin
+        if (wave_file != "") begin
+	    $display("[%s] @ t=%0t: waves written to %s", id, $time, wave_file);
+	end
+	$display("\n[%s] @ t=%0t: Verilator simulation ending...", id, $time);
     end
 
     // wrapper for CV32E40S, the memory system and stdout peripheral
@@ -149,12 +163,13 @@ module tb_top
         #(
           .INSTR_RDATA_WIDTH (INSTR_RDATA_WIDTH),
           .RAM_ADDR_WIDTH    (RAM_ADDR_WIDTH),
-          .BOOT_ADDR         (BOOT_ADDR)
+          .BOOT_ADDR         (32'h80)
          )
     cv32e40s_tb_wrapper_i
         (
          .clk_i          ( core_clk     ),
          .rst_ni         ( core_rst_n   ),
+         .boot_addr_i    ( boot_addr    ),
          .fetch_enable_i ( fetch_enable ),
          .tests_passed_o ( tests_passed ),
          .tests_failed_o ( tests_failed ),
