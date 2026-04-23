@@ -473,6 +473,42 @@ verilate: CV_CORE_pkg $(TBSRC_VERI) $(TBSRC_PKG)
 sanity-veri-run:
 	make verilate TEST=hello-world
 
+# run-test: compile a C test from tests/programs/custom/$(TEST)/ and run with Verilator.
+# Does NOT use yaml2make — safe to call without the UVM test framework.
+# Usage: make run-test [TEST=hello-world]
+.PHONY: run-test
+run-test: verilate
+	@echo "$(BANNER)"
+	@echo "* Building BSP"
+	@echo "$(BANNER)"
+	$(MAKE) -C $(BSP) \
+		RISCV=$(RISCV) \
+		RISCV_EXE_PREFIX=$(RISCV_EXE_PREFIX) \
+		RISCV_MARCH=$(RISCV_MARCH)
+	@echo "$(BANNER)"
+	@echo "* Compiling test: $(TEST)"
+	@echo "$(BANNER)"
+	$(RISCV_EXE_PREFIX)$(RISCV_CC) \
+		-Os -g -static -mabi=ilp32 -march=$(RISCV_MARCH) -mno-relax \
+		-nostartfiles \
+		-I $(BSP) \
+		-T $(BSP)/link.ld \
+		-o $(VERI_CUSTOM)/$(TEST)/$(TEST).elf \
+		$(VERI_CUSTOM)/$(TEST)/$(TEST).c \
+		-L$(BSP) -lcv-verif
+	$(RISCV_EXE_PREFIX)objcopy -O verilog \
+		$(VERI_CUSTOM)/$(TEST)/$(TEST).elf \
+		$(VERI_CUSTOM)/$(TEST)/$(TEST).hex
+	@echo "$(BANNER)"
+	@echo "* Running test: $(TEST)"
+	@echo "$(BANNER)"
+	mkdir -p $(VERI_LOG_DIR)
+	$(SIM_TEST_RESULTS)/verilator_executable \
+		$(VERI_RUN_FLAGS) \
+		$(VERI_WAVE_CMD) \
+		+test_program=$(VERI_CUSTOM_RELPATH)/$(TEST)/$(TEST).hex \
+		| tee $(VERI_LOG_DIR)/$(TEST).log
+
 veri-test: verilate $(VERI_CUSTOM)/$(TEST)/$(TEST).hex
 	@echo "$(BANNER)"
 	@echo "* Running with Verilator: logfile in $(VERI_LOG_DIR)/$(TEST).log"
