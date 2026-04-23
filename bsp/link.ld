@@ -56,6 +56,9 @@ SECTIONS
     KEEP(*(.vectors));
   } >ram
 
+  /* CORE-V: Zcmt JVT base (crt0.S writes this to the jvt CSR) */
+  PROVIDE(__jvt_base$ = 0);
+
   /* CORE-V: crt0 init code */
   .init (__boot_address):
   {

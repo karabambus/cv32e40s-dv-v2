@@ -61,6 +61,10 @@ SV_CMP_FLAGS =
 CUSTOM_PROG  ?= requested_csr_por
 TEST         ?= hello-world
 
+CV_SW_TOOLCHAIN ?= /opt/riscv
+CV_SW_PREFIX    ?= riscv64-unknown-elf-
+CV_SW_MARCH     ?= rv32imc_zicsr_zifencei
+
 ###############################################################################
 # Common Makefiles:
 #  -Variables for RTL and other dependencies (e.g. RISCV-DV)
@@ -151,6 +155,9 @@ ASIM_FLAGS       ?=  # user defined
 ALL_ASIM_FLAGS    = $(ASIM_FLAGS)
 ASIM_DEBUG_FLAGS  = -dbg
 ASIM_GUI_FLAGS    = -gui
+
+VERI_CUSTOM          = $(CV32E40S_DV)/tests/programs/custom
+VERI_CUSTOM_RELPATH  = ../../tests/programs/custom
 
 # TB source files for the CV32E core
 TBSRC_HOME  := $(CV32E40S_DV)/tb

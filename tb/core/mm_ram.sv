@@ -78,6 +78,10 @@ module mm_ram
     localparam int                        MMADDR_PRINT          = 32'h1000_0000;
     localparam int                        MMADDR_TESTSTATUS     = 32'h2000_0000;
     localparam int                        MMADDR_EXIT           = 32'h2000_0004;
+    // Virtual Peripheral (VP) addresses used by the dev-branch BSP (corev_uvmt.h)
+    localparam int                        MMADDR_VP_PRINT       = 32'h0080_0000;
+    localparam int                        MMADDR_VP_STATUS      = 32'h0080_00c0;
+    localparam int                        MMADDR_VP_EXIT        = 32'h0080_00c4;
     localparam int                        MMADDR_SIGBEGIN       = 32'h2000_0008;
     localparam int                        MMADDR_SIGEND         = 32'h2000_000C;
     localparam int                        MMADDR_SIGDUMP        = 32'h2000_0010;
@@ -338,6 +342,21 @@ module mm_ram
                     exit_valid_o = '1;
                     exit_value_o = data_wdata_i;
 
+                // VP addresses (dev-branch BSP / corev_uvmt.h style)
+                end else if (data_addr_i == MMADDR_VP_PRINT) begin
+                    print_wdata = data_wdata_i;
+                    print_valid = '1;
+
+                end else if (data_addr_i == MMADDR_VP_STATUS) begin
+                    if (data_wdata_i == 123456789)
+                        tests_passed_o = '1;
+                    else if (data_wdata_i == 1)
+                        tests_failed_o = '1;
+
+                end else if (data_addr_i == MMADDR_VP_EXIT) begin
+                    exit_valid_o = '1;
+                    exit_value_o = data_wdata_i;
+
                 end else if (data_addr_i == MMADDR_SIGBEGIN) begin
                     // sets signature begin
                     sig_begin_d = data_wdata_i;
@@ -473,6 +492,9 @@ module mm_ram
          || data_addr_i == MMADDR_DBG
          || data_addr_i == MMADDR_TESTSTATUS
          || data_addr_i == MMADDR_EXIT
+         || data_addr_i == MMADDR_VP_PRINT
+         || data_addr_i == MMADDR_VP_STATUS
+         || data_addr_i == MMADDR_VP_EXIT
          || data_addr_i == MMADDR_SIGBEGIN
          || data_addr_i == MMADDR_SIGEND
          || data_addr_i == MMADDR_SIGDUMP
