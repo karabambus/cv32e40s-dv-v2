@@ -15,6 +15,12 @@
 //
 // SPDX-License-Identifier: Apache-2.0 WITH SHL-0.51
 
+// B_EXT configuration: override via +define+CV32E40S_B_EXT=<enum-literal>
+// Valid values: B_NONE (default), ZBA_ZBB, ZBA_ZBB_ZBS, ZBA_ZBB_ZBC_ZBS
+`ifndef CV32E40S_B_EXT
+  `define CV32E40S_B_EXT B_NONE
+`endif
+
 import cv32e40s_pkg::*;
 
 module cv32e40s_tb_wrapper
@@ -58,15 +64,19 @@ module cv32e40s_tb_wrapper
     logic                                debug_req;
     logic                                fencei_flush_req;
 
-    // PMP: All 16 regions OFF at reset, mseccfg=0, M-mode unrestricted.
-    // Explicit localparams needed for Verilator constant folding.
+    // mseccfg reset value — scalar, always present regardless of PMP_NUM_REGIONS.
+    localparam cv32e40s_pkg::mseccfg_t PMP_MSECCFG_RV_SETTING = cv32e40s_pkg::MSECCFG_DEFAULT;
+
+`ifdef CV32E40S_HAS_PMP
+    // 16 PMP regions, all OFF at reset — M-mode retains full access.
+    // Explicit localparams required for Verilator constant folding.
     localparam cv32e40s_pkg::pmpncfg_t PMP_PMPNCFG_RV_SETTING[16] = '{default: cv32e40s_pkg::PMPNCFG_DEFAULT};
     localparam logic [31:0]            PMP_PMPADDR_RV_SETTING[16]  = '{default: 32'h0};
-    localparam cv32e40s_pkg::mseccfg_t PMP_MSECCFG_RV_SETTING      = cv32e40s_pkg::MSECCFG_DEFAULT;
+`endif
 
-    // PMA Region 0: 0x00000000 – 0x003FFFFF (4 MB main memory)
-    // Covers all code (.text) and data (.data, .bss, .tohost) sections.
-    // Everything outside defaults to I/O (no exec, no misaligned, no PUSH/POP).
+`ifdef CV32E40S_HAS_PMA
+    // PMA Region 0: 0x00000000–0x003FFFFF (4 MB main memory).
+    // Covers all .text and .data sections; everything outside is treated as I/O.
     localparam cv32e40s_pkg::pma_cfg_t PMA_CFG_SETTING[1] = '{
         '{
             word_addr_low:  32'h0000_0000,
@@ -78,28 +88,36 @@ module cv32e40s_tb_wrapper
             default:        '0
         }
     };
+`endif
 
-    // --- CV32E40S Core Instantiation (Using your Template) ---
+    // --- CV32E40S Core Instantiation ---
     cv32e40s_core #(
         .LIB                      ( 0 ),
         .RV32                     ( cv32e40s_pkg::RV32I ),
-        .B_EXT                    ( cv32e40s_pkg::B_NONE ), // Changed from NONE to B_NONE
-        .M_EXT                    ( cv32e40s_pkg::M      ),
+        .B_EXT                    ( `CV32E40S_B_EXT ),
+        .M_EXT                    ( cv32e40s_pkg::M ),
         .DEBUG                    ( 1 ),
         .DM_REGION_START          ( 32'hF0000000 ),
         .DM_REGION_END            ( 32'hF0003FFF ),
         .DBG_NUM_TRIGGERS         ( 1 ),
         .PMP_GRANULARITY          ( 0 ),
+        .PMP_MSECCFG_RV           ( PMP_MSECCFG_RV_SETTING ),
+`ifdef CV32E40S_HAS_PMP
         .PMP_NUM_REGIONS          ( 16 ),
         .PMP_PMPNCFG_RV           ( PMP_PMPNCFG_RV_SETTING ),
         .PMP_PMPADDR_RV           ( PMP_PMPADDR_RV_SETTING ),
-        .PMP_MSECCFG_RV           ( PMP_MSECCFG_RV_SETTING ),
+`else
+        .PMP_NUM_REGIONS          ( 0 ),
+`endif
+`ifdef CV32E40S_HAS_PMA
         .PMA_NUM_REGIONS          ( 1 ),
-        // Use a raw zero-initializer if PMA_CFG_DEFAULT isn't in your package
-        .PMA_CFG                  ( PMA_CFG_SETTING ), 
+        .PMA_CFG                  ( PMA_CFG_SETTING ),
+`else
+        .PMA_NUM_REGIONS          ( 0 ),
+`endif
         .CLIC                     ( 0 ),
         .CLIC_ID_WIDTH            ( 5 ),
-        .LFSR0_CFG                ( cv32e40s_pkg::LFSR_CFG_DEFAULT ), 
+        .LFSR0_CFG                ( cv32e40s_pkg::LFSR_CFG_DEFAULT ),
         .LFSR1_CFG                ( cv32e40s_pkg::LFSR_CFG_DEFAULT ),
         .LFSR2_CFG                ( cv32e40s_pkg::LFSR_CFG_DEFAULT )
     ) u_core (
