@@ -135,8 +135,8 @@ VERILATOR           = verilator
 VERI_FLAGS         +=
 VERI_COMPILE_FLAGS += -Wno-COMBDLY -Wno-MULTIDRIVEN -Wno-BLKANDNBLK -Wno-lint --Wno-UNOPTFLAT -Wno-MODDUP -Wno-SYMRSVDWORD +define+COREV_ASSERT_OFF $(SV_CMP_FLAGS)
 VERI_TRACE         ?=
-VERI_OBJ_DIR       ?= cobj_dir
-VERI_LOG_DIR       ?= cobj_dir/logs
+VERI_OBJ_DIR       ?= cobj_dir/$(CV_CORE_CONFIG)
+VERI_LOG_DIR       ?= cobj_dir/$(CV_CORE_CONFIG)/logs
 VERI_CFLAGS        += -O2
 
 #riviera configuration
@@ -210,7 +210,7 @@ tbsrc: $(TBSRC)
 
 ###############################################################################
 
-SIMULATOR ?= vcs
+SIMULATOR ?= verilator
 
 .PHONY: hello-world
 hello-world: $(SIMULATOR)-hello-world
@@ -473,6 +473,10 @@ verilate: CV_CORE_pkg $(TBSRC_VERI) $(TBSRC_PKG)
 sanity-veri-run:
 	make verilate TEST=hello-world
 
+.PHONY: verilator-hello-world
+verilator-hello-world:
+	$(MAKE) run-test TEST=hello-world
+
 # run-test: compile a C test from tests/programs/custom/$(TEST)/ and run with Verilator.
 # Does NOT use yaml2make — safe to call without the UVM test framework.
 # Usage: make run-test [TEST=hello-world]
@@ -704,9 +708,40 @@ clean_all: distclean
 # ACT4 Certification workflow
 ###############################################################################
 
-# config selector (override on command line for future variants, e.g. rv32imcb)
-CV_CORE_CONFIG   ?= rv32imc_PMA-PMP
-CERT_CONFIG_NAME  = cv32e40s_$(CV_CORE_CONFIG)
+# config selector — supported: rv32imc, rv32imc-pma, rv32imc-pma-pmp, rv32imcb-pma-pmp
+# CERT_TB_DEFINES holds all +define+ flags that must match the hardware configuration:
+#   CV32E40S_B_EXT   — b_ext_e enum literal (B_NONE or ZBA_ZBB_ZBC_ZBS)
+#   CV32E40S_HAS_PMP — defined when PMP_NUM_REGIONS=16; absent when PMP_NUM_REGIONS=0
+#   CV32E40S_HAS_PMA — defined when PMA_NUM_REGIONS=1;  absent when PMA_NUM_REGIONS=0
+CV_CORE_CONFIG   ?= rv32imc-pma-pmp
+
+ifeq ($(CV_CORE_CONFIG),rv32imcb-pma-pmp)
+  CERT_CONFIG_NAME = cv32e40s-rv32imcb-pma-pmp
+  CERT_CONFIG_DIR  = cve4
+  CERT_TB_DEFINES  = +define+CV32E40S_B_EXT=ZBA_ZBB_ZBC_ZBS \
+                     +define+CV32E40S_HAS_PMP \
+                     +define+CV32E40S_HAS_PMA
+else ifeq ($(CV_CORE_CONFIG),rv32imc-pma-pmp)
+  CERT_CONFIG_NAME = cv32e40s-rv32imc-pma-pmp
+  CERT_CONFIG_DIR  = cve4
+  CERT_TB_DEFINES  = +define+CV32E40S_B_EXT=B_NONE \
+                     +define+CV32E40S_HAS_PMP \
+                     +define+CV32E40S_HAS_PMA
+else ifeq ($(CV_CORE_CONFIG),rv32imc-pma)
+  CERT_CONFIG_NAME = cv32e40s-rv32imc-pma
+  CERT_CONFIG_DIR  = cve4
+  CERT_TB_DEFINES  = +define+CV32E40S_B_EXT=B_NONE \
+                     +define+CV32E40S_HAS_PMA
+else ifeq ($(CV_CORE_CONFIG),rv32imc)
+  CERT_CONFIG_NAME = cv32e40s-rv32imc
+  CERT_CONFIG_DIR  = cve4
+  CERT_TB_DEFINES  = +define+CV32E40S_B_EXT=B_NONE
+else
+  $(error Unknown CV_CORE_CONFIG=$(CV_CORE_CONFIG). Supported: rv32imc, rv32imc-pma, rv32imc-pma-pmp, rv32imcb-pma-pmp)
+endif
+
+# bake hardware-config defines into Verilator compile flags
+VERI_COMPILE_FLAGS += $(CERT_TB_DEFINES)
 
 ###############################################################################
 # Certification profile: scopes which extension testplans ACT4 processes.
@@ -717,7 +752,7 @@ CERT_PROFILE ?=
 
 ifeq ($(CERT_PROFILE),rvi20)
   # RVI20U32 profile — mandatory: I; optional: A,C,D,F,M,Zca,Zcd,Zcf,Zicntr,Zicsr,Zifencei,Zihpm
-  _CERT_EXTS = I,M,A,C,D,F,Zca,Zcd,Zcf,Zicntr,Zicsr,Zifencei,Zihpm
+  _CERT_EXTS = 
 else ifneq ($(CERT_PROFILE),)
   $(error Unknown CERT_PROFILE=$(CERT_PROFILE). Supported: rvi20)
 endif
@@ -726,7 +761,7 @@ endif
 # certification test-program directories
 certification_PROGRAM_PATH    = $(ACT4_PKG)/work/$(CERT_CONFIG_NAME)/elfs
 certification_PROGRAM_RELPATH = ../../vendor_lib/riscv-arch-test/act4/work/$(CERT_CONFIG_NAME)/elfs
-CERT_RESULTS_DIR = certification$(if $(CERT_PROFILE),_$(CERT_PROFILE))
+CERT_RESULTS_DIR = certification_$(CV_CORE_CONFIG)$(if $(CERT_PROFILE),_$(CERT_PROFILE))
 
 ###############################################################################
 # certification test target (run ALL ELFs under compliance/rv32, quiet + summary)
@@ -737,7 +772,7 @@ gen: $(ACT4_PKG)
 	@echo "* Running ACT4.0 gen$(if $(CERT_PROFILE), with profile '$(CERT_PROFILE)' extensions: $(_CERT_EXTS))"
 	@$(MAKE) -C $(ACT4_PKG) \
 	    $(if $(_CERT_EXTS),EXTENSIONS=$(_CERT_EXTS)) \
-	    CONFIG_FILES=config/cores/cv32e40s/$(CERT_CONFIG_NAME)/test_config.yaml
+	    CONFIG_FILES=config/cores/$(CERT_CONFIG_DIR)/$(CERT_CONFIG_NAME)/test_config.yaml
 
 .PHONY: certify
 certify: TEST = $(CERT_RESULTS_DIR)
@@ -750,7 +785,7 @@ certify: verilate
 	SUMMARY="$(VERI_LOG_DIR)/certification_summary.txt"; \
 	echo "RESULT  TEST" > "$$SUMMARY"; \
 	echo "------  ----" >> "$$SUMMARY"; \
-	ROOT="$(certification_PROGRAM_PATH)/rv32i"; \
+	ROOT="$(certification_PROGRAM_PATH)"; \
 	ELFS="$$(find -L "$$ROOT" \( -type f -o -type l \) -a \( -iname '*.elf' -o -iname '*.elf32' \) 2>/dev/null | sort)"; \
 	if [ -z "$$ELFS" ]; then \
 	  echo "No .elf files found under $$ROOT"; \
@@ -802,7 +837,7 @@ gen-certify: gen certify
 #   make certify-vsim   [CV_CORE_CONFIG=rv32imc]  # run all ELFs under rv32i/
 #   make certify-vsim FILTER=I                     # run only rv32i/I ELFs
 #   make gen-certify-vsim [CV_CORE_CONFIG=rv32imc] # gen + compile + run
-#   make questa-clean   [CV_CORE_CONFIG=rv32imc]   # wipe work library
+#   make cert-questa-clean [CV_CORE_CONFIG=rv32imc] # wipe work library
 ###############################################################################
 
 CERT_VSIM_WORK_DIR = $(SIM_RESULTS)/questa_$(CV_CORE_CONFIG)
@@ -815,6 +850,7 @@ CERT_VSIM_OPT_TOP  = tb_top_opt
 # With Questa FSE (Altera Starter), keep +define+VERILATOR.
 CERT_VLOG_FLAGS = -sv -work $(CERT_VSIM_WORK_DIR) \
                   +define+VERILATOR \
+                  $(CERT_TB_DEFINES) \
                   -suppress 2583
 CERT_VOPT_FLAGS = -work $(CERT_VSIM_WORK_DIR) \
                   +acc -o $(CERT_VSIM_OPT_TOP)
@@ -896,6 +932,6 @@ certify-vsim:
 .PHONY: gen-certify-vsim
 gen-certify-vsim: gen questa-compile certify-vsim
 
-.PHONY: questa-clean
-questa-clean:
+.PHONY: cert-questa-clean
+cert-questa-clean:
 	rm -rf $(CERT_VSIM_WORK_DIR)
